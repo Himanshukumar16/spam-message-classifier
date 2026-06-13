@@ -381,3 +381,19 @@ def train_and_evaluate():
     # console.print(f"[success]Model saved → [underline]{MODEL_PATH}[/underline][/success]\n")
 
     return pipe
+
+def load_model() -> Pipeline:
+    if not os.path.exists(MODEL_PATH):
+        console.print("[error]No saved model found. Run without --predict first.[/error]")
+        sys.exit(1)
+    # console.print(f"[info]Loading model from [underline]{MODEL_PATH}[/underline]…[/info]")
+    return joblib.load(MODEL_PATH)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Spam Message Classifier")
+    parser.add_argument("--predict",        action="store_true",
+                        help="Skip training; load saved model and run interactive predictor.")
+    parser.add_argument("--no-interactive", action="store_true",
+                        help="Train & evaluate only; skip interactive predictor.")
+    return parser.parse_args()
