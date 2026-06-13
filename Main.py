@@ -397,3 +397,18 @@ def parse_args():
     parser.add_argument("--no-interactive", action="store_true",
                         help="Train & evaluate only; skip interactive predictor.")
     return parser.parse_args()
+
+def main():
+    args = parse_args()
+    print_banner()
+
+    if args.predict:
+        pipe = load_model()
+    else:
+        pipe = train_and_evaluate()
+
+    if not args.no_interactive:
+        interactive_predictor(pipe)
+
+if __name__ == "__main__":
+    main()
