@@ -272,3 +272,45 @@ def interactive_predictor(pipe: Pipeline):
     for i, msg in enumerate(example_messages, 1):
         console.print(f"  [cyan]{i}.[/cyan] {msg[:80]}{'…' if len(msg)>80 else ''}")
     console.print()
+
+    while True:
+        try:
+            user_input = Prompt.ask("[bold white]Enter message[/bold white]")
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[warn]Exiting…[/warn]")
+            break
+
+        if user_input.strip().lower() in ("quit", "exit", "q"):
+            console.print("[info]Thank You![/info]")
+            break
+
+        if not user_input.strip():
+            continue
+
+        cleaned    = clean_text(user_input)
+        proba      = pipe.predict_proba([cleaned])[0]
+        prediction = pipe.predict([cleaned])[0]
+
+        spam_prob = proba[1] * 100
+        ham_prob  = proba[0] * 100
+
+        if prediction == 1:
+            verdict = Panel(
+                f"[bold red] SPAM DETECTED[/bold red]\n\n"
+                f"Spam probability : [red]{spam_prob:.1f}%[/red]\n"
+                f"Ham  probability : [green]{ham_prob:.1f}%[/green]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        else:
+            verdict = Panel(
+                f"[bold green] LEGITIMATE (Ham)[/bold green]\n\n"
+                f"Ham  probability : [green]{ham_prob:.1f}%[/green]\n"
+                f"Spam probability : [red]{spam_prob:.1f}%[/red]",
+                border_style="green",
+                padding=(0, 1),
+            )
+
+        console.print(verdict)
+        console.print()
+
