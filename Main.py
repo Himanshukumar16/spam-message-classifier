@@ -75,3 +75,44 @@ def load_data(path: str) -> pd.DataFrame:
     df["clean"] = df["message"].apply(clean_text)
 
     return df
+
+#  3. MODEL BUILDING
+
+def build_pipeline() -> Pipeline:
+    tfidf = TfidfVectorizer(
+        analyzer       = "char_wb",     # character n-grams handle typos/obfuscation
+        ngram_range    = (2, 5),
+        max_features   = 80_000,
+        sublinear_tf   = True,
+        min_df         = 1,
+        strip_accents  = "unicode",
+    )
+
+    # Word-level vectorised blended via manual feature concat
+    tfidf_word = TfidfVectorizer(
+        analyzer      = "word",
+        ngram_range   = (1, 2),
+        max_features  = 40_000,
+        sublinear_tf  = True,
+        min_df        = 1,
+        strip_accents = "unicode",
+    )
+
+    from sklearn.pipeline import FeatureUnion
+
+    features = FeatureUnion([
+        ("char_tfidf", tfidf),
+        ("word_tfidf", tfidf_word),
+    ])
+
+    clf = CalibratedClassifierCV(
+        LinearSVC(C=1.0, max_iter=2000, class_weight="balanced"),
+        cv=3,
+        method="sigmoid",
+    )
+
+    pipe = Pipeline([
+        ("features", features),
+        ("clf",      clf),
+    ])
+    return pipe
