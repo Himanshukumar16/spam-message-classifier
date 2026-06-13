@@ -3,6 +3,7 @@ import re
 import sys
 import warnings
 import argparse
+import console
 # import time
 import pandas as pd
 import joblib
@@ -22,12 +23,29 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
-# from rich.rule import Rule
+from rich.rule import Rule
 from rich.prompt import Prompt
 from rich.theme import Theme
 from rich import box
 warnings.filterwarnings("ignore")
 matplotlib.use("Agg")
+
+theme = Theme({
+    "info":    "bold cyan",
+    "success": "bold green",
+    "warn":    "bold yellow",
+    "error":   "bold red",
+    "spam":    "bold red on white",
+    "ham":     "bold green on white",
+    "heading": "bold white on dark_blue",
+})
+console = Console(theme=theme)
+
+DATASET_PATH   = "spam_dataset.csv"
+MODEL_PATH     = "spam_model.pkl"
+CM_IMAGE_PATH  = "confusion_matrix.png"
+TEST_SIZE      = 0.20
+RANDOM_STATE   = 42
 
 #  1. TEXT PREPROCESSING
 
