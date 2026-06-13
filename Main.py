@@ -314,3 +314,70 @@ def interactive_predictor(pipe: Pipeline):
         console.print(verdict)
         console.print()
 
+#  6. MAIN ENTRYPOINT
+
+def train_and_evaluate():
+    # ── Load data ───────────────────────────────────────────────────────────
+    # console.print(Rule("[heading] Step 1 · Loading Data [/heading]"))
+    df = load_data(DATASET_PATH)
+    # print_dataset_stats(df)
+
+    X = df["clean"]
+    y = df["target"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+    )
+
+    # console.print(f"Training samples : [cyan]{len(X_train)}[/cyan]")
+    # console.print(f"Test samples     : [cyan]{len(X_test)}[/cyan]\n")
+
+    # ── Build & train ────────────────────────────────────────────────────────
+    # console.print(Rule("[heading] Step 2 · Training Model [/heading]"))
+    pipe = build_pipeline()
+
+    with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TimeElapsedColumn(),
+    ) as progress:
+        # task = progress.add_task("Training TF-IDF + CalibratedLinearSVC…", total=None)
+        # t0   = time.time()
+        pipe.fit(X_train, y_train)
+        # elapsed = time.time() - t0
+        progress.stop()
+
+    # console.print(f"[success]Training complete in {elapsed:.2f}s[/success]\n")
+
+    # ── Cross-validation ─────────────────────────────────────────────────────
+    # console.print(Rule("[heading] Step 3 · Cross-Validation [/heading]"))
+    run_cross_validation(pipe, X, y)
+
+    # ── Evaluate ─────────────────────────────────────────────────────────────
+    # console.print(Rule("[heading] Step 4 · Test-Set Evaluation [/heading]"))
+
+    y_pred  = pipe.predict(X_test)
+    y_proba = pipe.predict_proba(X_test)[:, 1]
+
+    metrics = {
+        "Accuracy":  accuracy_score(y_test, y_pred),
+        "F1-Score":  f1_score(y_test, y_pred, average="binary"),
+        "Recall":    recall_score(y_test, y_pred, average="binary"),
+        "Precision": precision_score(y_test, y_pred, average="binary"),
+        "ROC-AUC":   roc_auc_score(y_test, y_proba),
+    }
+
+    # print_metrics_table(metrics)
+    # print_classification_report(y_test, y_pred)
+
+    # Confusion matrix
+    plot_confusion_matrix(y_test, y_pred, CM_IMAGE_PATH)
+    console.print()
+
+    # ── Save model ───────────────────────────────────────────────────────────
+    # console.print(Rule("[heading] Step 5 · Saving Model [/heading]"))
+    joblib.dump(pipe, MODEL_PATH)
+    # console.print(f"[success]Model saved → [underline]{MODEL_PATH}[/underline][/success]\n")
+
+    return pipe
