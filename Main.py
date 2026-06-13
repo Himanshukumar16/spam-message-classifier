@@ -252,3 +252,23 @@ def run_cross_validation(pipe: Pipeline, X: pd.Series, y: pd.Series):
 
     # console.print(t)
     # console.print()
+
+    #  5. INTERACTIVE PREDICTOR
+
+def interactive_predictor(pipe: Pipeline):
+    # console.print(Rule("[bold cyan] Interactive Spam Detector[/bold cyan]"))
+    console.print("Type a message and press Enter to classify it.")
+    console.print("[dim]Type [bold]quit[/bold] or [bold]exit[/bold] to stop.[/dim]\n")
+
+    example_messages = [
+        "WINNER!! You have been selected to receive a £1000 prize! Call 09061701461 now!",
+        "Hey, are you coming to the office party tonight?",
+        "Congratulations! Your phone number has WON £500,000. Claim at once!",
+        "Can you pick up some milk on your way home?",
+        "FREE entry to win a holiday! Text WIN to 87575 now! T&Cs apply.",
+    ]
+
+    console.print("[dim]── Example messages you can try ──[/dim]")
+    for i, msg in enumerate(example_messages, 1):
+        console.print(f"  [cyan]{i}.[/cyan] {msg[:80]}{'…' if len(msg)>80 else ''}")
+    console.print()
