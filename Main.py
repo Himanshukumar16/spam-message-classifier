@@ -116,3 +116,139 @@ def build_pipeline() -> Pipeline:
         ("clf",      clf),
     ])
     return pipe
+
+#  4. EVALUATION HELPERS
+
+def print_banner():
+    console.print(
+        Panel.fit(
+            "SPAM EMAIL CLASSIFIER",
+            border_style="white",
+            padding=(1, 4)
+        )
+    )
+
+
+def print_dataset_stats(df: pd.DataFrame):
+    spam_n = (df["target"] == 1).sum()
+    ham_n  = (df["target"] == 0).sum()
+    total  = len(df)
+
+    t = Table(title="Dataset Overview", box=box.ROUNDED, border_style="cyan")
+    t.add_column("Split",         style="bold")
+    t.add_column("Count",         justify="right")
+    t.add_column("Percentage",    justify="right")
+
+    t.add_row("Total messages", str(total),  "100.0%")
+    t.add_row("[green]Ham (legit)[/green]",  str(ham_n),
+              f"{ham_n/total*100:.1f}%")
+    t.add_row("[red]Spam[/red]",            str(spam_n),
+              f"{spam_n/total*100:.1f}%")
+
+    # console.print(t)
+    # console.print()
+
+
+def print_metrics_table(metrics: dict):
+    t = Table(title="📈 Classification Metrics", box=box.DOUBLE_EDGE,
+              border_style="green")
+    t.add_column("Metric",    style="bold white")
+    t.add_column("Score",     justify="right", style="bold")
+    t.add_column("Status",    justify="center")
+
+    thresholds = {
+        "Accuracy":  0.95,
+        "F1-Score":  0.95,
+        "Recall":    0.90,
+        "Precision": 0.95,
+        "ROC-AUC":   0.97,
+    }
+
+    for name, val in metrics.items():
+        threshold = thresholds.get(name, 0.90)
+        passed    = val >= threshold
+        score_str = f"{val*100:.2f}%"
+        status    = "[green]✔ PASS[/green]" if passed else "[red]✘ FAIL[/red]"
+        color     = "green" if passed else "red"
+        t.add_row(name, f"[{color}]{score_str}[/{color}]", status)
+
+    # console.print(t)
+    # console.print()
+
+
+def print_classification_report(y_test, y_pred):
+    report = classification_report(y_test, y_pred,
+                                   target_names=["Ham", "Spam"])
+    # console.print(Panel(
+    #     f"[dim]{report}[/dim]",
+    #     title="[bold]Full Classification Report[/bold]",
+    #     border_style="blue",
+    # ))
+
+
+def plot_confusion_matrix(y_test, y_pred, save_path: str):
+    cm = confusion_matrix(y_test, y_pred)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.patch.set_facecolor("#0d1117")
+
+    labels = ["Ham", "Spam"]
+    cmap   = sns.color_palette("Blues", as_cmap=True)
+
+    # --- Raw counts ---
+    sns.heatmap(cm, annot=True, fmt="d", cmap=cmap, ax=axes[0],
+                xticklabels=labels, yticklabels=labels,
+                linewidths=0.5, linecolor="#30363d",
+                annot_kws={"size": 18, "color": "white"})
+    axes[0].set_title("Confusion Matrix (Counts)",
+                      color="white", fontsize=14, pad=12)
+    axes[0].set_xlabel("Predicted Label", color="#8b949e")
+    axes[0].set_ylabel("True Label",      color="#8b949e")
+    axes[0].tick_params(colors="white")
+
+    # --- Normalised ---
+    cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+    sns.heatmap(cm_norm, annot=True, fmt=".2%", cmap=cmap, ax=axes[1],
+                xticklabels=labels, yticklabels=labels,
+                linewidths=0.5, linecolor="#30363d",
+                annot_kws={"size": 16, "color": "white"})
+    axes[1].set_title("Confusion Matrix (Normalised)",
+                      color="white", fontsize=14, pad=12)
+    axes[1].set_xlabel("Predicted Label", color="#8b949e")
+    axes[1].set_ylabel("True Label",      color="#8b949e")
+    axes[1].tick_params(colors="white")
+
+    # Stat annotations
+    tn, fp, fn, tp = cm.ravel()
+    stats = (f"TN={tn} | FP={fp} | FN={fn} | TP={tp}\n"
+             f"False-Positive Rate: {fp/(fp+tn)*100:.2f}%   "
+             f"False-Negative Rate: {fn/(fn+tp)*100:.2f}%")
+    fig.text(0.5, 0.01, stats, ha="center", color="#8b949e", fontsize=10)
+
+    plt.suptitle(" Spam Classifier — Confusion Matrix",
+                 color="white", fontsize=16, y=1.02)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    plt.close()
+    # console.print(f"[info]Confusion matrix saved → [underline]{save_path}[/underline][/info]")
+
+
+def run_cross_validation(pipe: Pipeline, X: pd.Series, y: pd.Series):
+    # console.print("[info]Running 5-fold stratified cross-validation…[/info]")
+    skf    = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+    scores = cross_val_score(pipe, X, y, cv=skf, scoring="f1", n_jobs=-1)
+
+    t = Table(title=" 5-Fold Cross-Validation (F1)", box=box.SIMPLE)
+    t.add_column("Fold",  justify="center")
+    t.add_column("F1",    justify="right", style="cyan")
+
+    for i, s in enumerate(scores, 1):
+        t.add_row(str(i), f"{s*100:.2f}%")
+
+    t.add_row("[bold]Mean[/bold]",
+              f"[bold green]{scores.mean()*100:.2f}%[/bold green]")
+    t.add_row("[bold]Std[/bold]",
+              f"[bold]{scores.std()*100:.2f}%[/bold]")
+
+    # console.print(t)
+    # console.print()
