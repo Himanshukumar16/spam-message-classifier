@@ -1,432 +1,209 @@
-import os
 import re
-import sys
-import warnings
-import argparse
-import console
-# import time
-import pandas as pd
+from pathlib import Path
+
 import joblib
-import matplotlib
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.pipeline import Pipeline
-from sklearn.svm import LinearSVC
+import pandas as pd
+import streamlit as st
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.metrics import (
-    accuracy_score, f1_score, recall_score, precision_score,
-    confusion_matrix, classification_report, roc_auc_score,
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import FeatureUnion, Pipeline
+from sklearn.svm import LinearSVC
+from sklearn.model_selection import train_test_split
+
+# -------------------- App settings --------------------
+st.set_page_config(
+    page_title="Spam Message Classifier",
+    page_icon="📩",
+    layout="centered",
 )
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
-from rich.rule import Rule
-from rich.prompt import Prompt
-from rich.theme import Theme
-from rich import box
-warnings.filterwarnings("ignore")
-matplotlib.use("Agg")
 
-theme = Theme({
-    "info":    "bold cyan",
-    "success": "bold green",
-    "warn":    "bold yellow",
-    "error":   "bold red",
-    "spam":    "bold red on white",
-    "ham":     "bold green on white",
-    "heading": "bold white on dark_blue",
-})
-console = Console(theme=theme)
+BASE_DIR = Path(__file__).resolve().parent
+DATASET_PATH = BASE_DIR / "spam_dataset.csv"
+MODEL_PATH = BASE_DIR / "spam_model.pkl"
+RANDOM_STATE = 42
 
-DATASET_PATH   = "spam_dataset.csv"
-MODEL_PATH     = "spam_model.pkl"
-CM_IMAGE_PATH  = "confusion_matrix.png"
-TEST_SIZE      = 0.20
-RANDOM_STATE   = 42
 
-#  1. TEXT PREPROCESSING
-
-def clean_text(text: str) -> str:
+# -------------------- Text preprocessing --------------------
+def clean_text(text):
     text = str(text).lower()
-    text = re.sub(r"http\S+|www\.\S+",              " urltoken ",  text)
-    text = re.sub(r"\b\d{5,}\b",                    " phonetoken ", text)
-    text = re.sub(r"[£$€]\d+[\d,]*",                " moneytoken ", text)
-    text = re.sub(r"[^a-z0-9\s]",                   " ",           text)
-    text = re.sub(r"\s+",                            " ",           text).strip()
+    text = re.sub(r"http\S+|www\.\S+", " urltoken ", text)
+    text = re.sub(r"\b\d{5,}\b", " phonetoken ", text)
+    text = re.sub(r"[£$€]\d+[\d,]*", " moneytoken ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
-#  2. DATA LOADING
-def load_data(path: str) -> pd.DataFrame:
-    if not os.path.exists(path):
-        console.print(f"[error]Dataset not found at '{path}'.[/error]\n"
-                      "Place spam_dataset.csv in the same folder as main.py.")
-        sys.exit(1)
+
+# -------------------- Dataset loading --------------------
+def load_dataset(path):
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Dataset not found: {path.name}. "
+            "Add spam_dataset.csv to the root of your GitHub repository."
+        )
 
     df = pd.read_csv(path)
-
-    # Normalise column names
     df.columns = df.columns.str.strip().str.lower()
 
-    # Accept various column naming conventions
-    if "label" in df.columns and "message" in df.columns:
+    if {"label", "message"}.issubset(df.columns):
         pass
-    elif "v1" in df.columns and "v2" in df.columns:
-        df.rename(columns={"v1": "label", "v2": "message"}, inplace=True)
-    elif "category" in df.columns and "message" in df.columns:
-        df.rename(columns={"category": "label"}, inplace=True)
+    elif {"v1", "v2"}.issubset(df.columns):
+        df = df.rename(columns={"v1": "label", "v2": "message"})
+    elif {"category", "message"}.issubset(df.columns):
+        df = df.rename(columns={"category": "label"})
     else:
-        console.print("[error]Could not detect label/message columns.[/error]")
-        sys.exit(1)
+        raise ValueError(
+            "Could not find the label/message columns. "
+            "Expected label and message, v1 and v2, or category and message."
+        )
 
-    df = df[["label", "message"]].dropna()
-    df["label"] = df["label"].str.strip().str.lower()
+    df = df[["label", "message"]].dropna().copy()
+    df["label"] = df["label"].astype(str).str.strip().str.lower()
+    df = df[df["label"].isin(["ham", "spam"])].copy()
 
-    # Map to 0/1
-    df["target"] = df["label"].map({"ham": 0, "spam": 1})
-    df = df.dropna(subset=["target"])
-    df["target"] = df["target"].astype(int)
+    if df.empty:
+        raise ValueError("The dataset contains no rows labelled 'ham' or 'spam'.")
 
-    # Clean text
+    df["target"] = df["label"].map({"ham": 0, "spam": 1}).astype(int)
     df["clean"] = df["message"].apply(clean_text)
+
+    if df["target"].nunique() < 2:
+        raise ValueError("The dataset must contain both ham and spam messages.")
 
     return df
 
-#  3. MODEL BUILDING
 
-def build_pipeline() -> Pipeline:
-    tfidf = TfidfVectorizer(
-        analyzer       = "char_wb",     # character n-grams handle typos/obfuscation
-        ngram_range    = (2, 5),
-        max_features   = 80_000,
-        sublinear_tf   = True,
-        min_df         = 1,
-        strip_accents  = "unicode",
+# -------------------- Model creation --------------------
+def build_pipeline():
+    char_tfidf = TfidfVectorizer(
+        analyzer="char_wb",
+        ngram_range=(2, 5),
+        max_features=80000,
+        sublinear_tf=True,
+        min_df=1,
+        strip_accents="unicode",
     )
 
-    # Word-level vectorised blended via manual feature concat
-    tfidf_word = TfidfVectorizer(
-        analyzer      = "word",
-        ngram_range   = (1, 2),
-        max_features  = 40_000,
-        sublinear_tf  = True,
-        min_df        = 1,
-        strip_accents = "unicode",
+    word_tfidf = TfidfVectorizer(
+        analyzer="word",
+        ngram_range=(1, 2),
+        max_features=40000,
+        sublinear_tf=True,
+        min_df=1,
+        strip_accents="unicode",
     )
-
-    from sklearn.pipeline import FeatureUnion
 
     features = FeatureUnion([
-        ("char_tfidf", tfidf),
-        ("word_tfidf", tfidf_word),
+        ("char_tfidf", char_tfidf),
+        ("word_tfidf", word_tfidf),
     ])
 
-    clf = CalibratedClassifierCV(
+    # Calibration enables probability estimates for the UI.
+    classifier = CalibratedClassifierCV(
         LinearSVC(C=1.0, max_iter=2000, class_weight="balanced"),
         cv=3,
         method="sigmoid",
     )
 
-    pipe = Pipeline([
+    return Pipeline([
         ("features", features),
-        ("clf",      clf),
+        ("clf", classifier),
     ])
-    return pipe
-
-#  4. EVALUATION HELPERS
-
-def print_banner():
-    console.print(
-        Panel.fit(
-            "SPAM EMAIL CLASSIFIER",
-            border_style="white",
-            padding=(1, 4)
-        )
-    )
 
 
-def print_dataset_stats(df: pd.DataFrame):
-    spam_n = (df["target"] == 1).sum()
-    ham_n  = (df["target"] == 0).sum()
-    total  = len(df)
-
-    t = Table(title="Dataset Overview", box=box.ROUNDED, border_style="cyan")
-    t.add_column("Split",         style="bold")
-    t.add_column("Count",         justify="right")
-    t.add_column("Percentage",    justify="right")
-
-    t.add_row("Total messages", str(total),  "100.0%")
-    t.add_row("[green]Ham (legit)[/green]",  str(ham_n),
-              f"{ham_n/total*100:.1f}%")
-    t.add_row("[red]Spam[/red]",            str(spam_n),
-              f"{spam_n/total*100:.1f}%")
-
-    # console.print(t)
-    # console.print()
-
-
-def print_metrics_table(metrics: dict):
-    t = Table(title="📈 Classification Metrics", box=box.DOUBLE_EDGE,
-              border_style="green")
-    t.add_column("Metric",    style="bold white")
-    t.add_column("Score",     justify="right", style="bold")
-    t.add_column("Status",    justify="center")
-
-    thresholds = {
-        "Accuracy":  0.95,
-        "F1-Score":  0.95,
-        "Recall":    0.90,
-        "Precision": 0.95,
-        "ROC-AUC":   0.97,
-    }
-
-    for name, val in metrics.items():
-        threshold = thresholds.get(name, 0.90)
-        passed    = val >= threshold
-        score_str = f"{val*100:.2f}%"
-        status    = "[green]✔ PASS[/green]" if passed else "[red]✘ FAIL[/red]"
-        color     = "green" if passed else "red"
-        t.add_row(name, f"[{color}]{score_str}[/{color}]", status)
-
-    # console.print(t)
-    # console.print()
-
-
-def print_classification_report(y_test, y_pred):
-    report = classification_report(y_test, y_pred,
-                                   target_names=["Ham", "Spam"])
-    # console.print(Panel(
-    #     f"[dim]{report}[/dim]",
-    #     title="[bold]Full Classification Report[/bold]",
-    #     border_style="blue",
-    # ))
-
-
-def plot_confusion_matrix(y_test, y_pred, save_path: str):
-    cm = confusion_matrix(y_test, y_pred)
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    fig.patch.set_facecolor("#0d1117")
-
-    labels = ["Ham", "Spam"]
-    cmap   = sns.color_palette("Blues", as_cmap=True)
-
-    # --- Raw counts ---
-    sns.heatmap(cm, annot=True, fmt="d", cmap=cmap, ax=axes[0],
-                xticklabels=labels, yticklabels=labels,
-                linewidths=0.5, linecolor="#30363d",
-                annot_kws={"size": 18, "color": "white"})
-    axes[0].set_title("Confusion Matrix (Counts)",
-                      color="white", fontsize=14, pad=12)
-    axes[0].set_xlabel("Predicted Label", color="#8b949e")
-    axes[0].set_ylabel("True Label",      color="#8b949e")
-    axes[0].tick_params(colors="white")
-
-    # --- Normalised ---
-    cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
-    sns.heatmap(cm_norm, annot=True, fmt=".2%", cmap=cmap, ax=axes[1],
-                xticklabels=labels, yticklabels=labels,
-                linewidths=0.5, linecolor="#30363d",
-                annot_kws={"size": 16, "color": "white"})
-    axes[1].set_title("Confusion Matrix (Normalised)",
-                      color="white", fontsize=14, pad=12)
-    axes[1].set_xlabel("Predicted Label", color="#8b949e")
-    axes[1].set_ylabel("True Label",      color="#8b949e")
-    axes[1].tick_params(colors="white")
-
-    # Stat annotations
-    tn, fp, fn, tp = cm.ravel()
-    stats = (f"TN={tn} | FP={fp} | FN={fn} | TP={tp}\n"
-             f"False-Positive Rate: {fp/(fp+tn)*100:.2f}%   "
-             f"False-Negative Rate: {fn/(fn+tp)*100:.2f}%")
-    fig.text(0.5, 0.01, stats, ha="center", color="#8b949e", fontsize=10)
-
-    plt.suptitle(" Spam Classifier — Confusion Matrix",
-                 color="white", fontsize=16, y=1.02)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight",
-                facecolor=fig.get_facecolor())
-    plt.close()
-    # console.print(f"[info]Confusion matrix saved → [underline]{save_path}[/underline][/info]")
-
-
-def run_cross_validation(pipe: Pipeline, X: pd.Series, y: pd.Series):
-    # console.print("[info]Running 5-fold stratified cross-validation…[/info]")
-    skf    = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    scores = cross_val_score(pipe, X, y, cv=skf, scoring="f1", n_jobs=-1)
-
-    t = Table(title=" 5-Fold Cross-Validation (F1)", box=box.SIMPLE)
-    t.add_column("Fold",  justify="center")
-    t.add_column("F1",    justify="right", style="cyan")
-
-    for i, s in enumerate(scores, 1):
-        t.add_row(str(i), f"{s*100:.2f}%")
-
-    t.add_row("[bold]Mean[/bold]",
-              f"[bold green]{scores.mean()*100:.2f}%[/bold green]")
-    t.add_row("[bold]Std[/bold]",
-              f"[bold]{scores.std()*100:.2f}%[/bold]")
-
-    # console.print(t)
-    # console.print()
-
-    #  5. INTERACTIVE PREDICTOR
-
-def interactive_predictor(pipe: Pipeline):
-    # console.print(Rule("[bold cyan] Interactive Spam Detector[/bold cyan]"))
-    console.print("Type a message and press Enter to classify it.")
-    console.print("[dim]Type [bold]quit[/bold] or [bold]exit[/bold] to stop.[/dim]\n")
-
-    example_messages = [
-        "WINNER!! You have been selected to receive a £1000 prize! Call 09061701461 now!",
-        "Hey, are you coming to the office party tonight?",
-        "Congratulations! Your phone number has WON £500,000. Claim at once!",
-        "Can you pick up some milk on your way home?",
-        "FREE entry to win a holiday! Text WIN to 87575 now! T&Cs apply.",
-    ]
-
-    console.print("[dim]── Example messages you can try ──[/dim]")
-    for i, msg in enumerate(example_messages, 1):
-        console.print(f"  [cyan]{i}.[/cyan] {msg[:80]}{'…' if len(msg)>80 else ''}")
-    console.print()
-
-    while True:
+@st.cache_resource(show_spinner="Loading or training the spam classifier...")
+def get_model():
+    # Reuse an existing model if one is included in the repository.
+    if MODEL_PATH.exists():
         try:
-            user_input = Prompt.ask("[bold white]Enter message[/bold white]")
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[warn]Exiting…[/warn]")
-            break
+            return joblib.load(MODEL_PATH), "loaded"
+        except Exception:
+            # If the saved model is incompatible/corrupt, train from the dataset.
+            pass
 
-        if user_input.strip().lower() in ("quit", "exit", "q"):
-            console.print("[info]Thank You![/info]")
-            break
-
-        if not user_input.strip():
-            continue
-
-        cleaned    = clean_text(user_input)
-        proba      = pipe.predict_proba([cleaned])[0]
-        prediction = pipe.predict([cleaned])[0]
-
-        spam_prob = proba[1] * 100
-        ham_prob  = proba[0] * 100
-
-        if prediction == 1:
-            verdict = Panel(
-                f"[bold red] SPAM DETECTED[/bold red]\n\n"
-                f"Spam probability : [red]{spam_prob:.1f}%[/red]\n"
-                f"Ham  probability : [green]{ham_prob:.1f}%[/green]",
-                border_style="red",
-                padding=(0, 1),
-            )
-        else:
-            verdict = Panel(
-                f"[bold green] LEGITIMATE (Ham)[/bold green]\n\n"
-                f"Ham  probability : [green]{ham_prob:.1f}%[/green]\n"
-                f"Spam probability : [red]{spam_prob:.1f}%[/red]",
-                border_style="green",
-                padding=(0, 1),
-            )
-
-        console.print(verdict)
-        console.print()
-
-#  6. MAIN ENTRYPOINT
-
-def train_and_evaluate():
-    # ── Load data ───────────────────────────────────────────────────────────
-    # console.print(Rule("[heading] Step 1 · Loading Data [/heading]"))
-    df = load_data(DATASET_PATH)
-    # print_dataset_stats(df)
-
+    df = load_dataset(DATASET_PATH)
     X = df["clean"]
     y = df["target"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+    # A small dataset can fail a stratified split; training on all rows avoids
+    # unnecessary deployment failure. We only need the trained model for inference.
+    model = build_pipeline()
+    model.fit(X, y)
+
+    # Saving is optional: some hosted environments may have a read-only filesystem.
+    try:
+        joblib.dump(model, MODEL_PATH)
+    except Exception:
+        pass
+
+    return model, "trained"
+
+
+# -------------------- User interface --------------------
+st.title("📩 Spam Message Classifier")
+st.write(
+    "Enter an SMS or message below to check whether it is likely to be spam "
+    "or a legitimate message."
+)
+
+with st.sidebar:
+    st.header("About")
+    st.write(
+        "This project uses character-level and word-level TF-IDF features "
+        "with a calibrated Linear Support Vector Classifier."
     )
+    st.caption("Predictions are estimates, not a guarantee that a message is safe.")
 
-    # console.print(f"Training samples : [cyan]{len(X_train)}[/cyan]")
-    # console.print(f"Test samples     : [cyan]{len(X_test)}[/cyan]\n")
-
-    # ── Build & train ────────────────────────────────────────────────────────
-    # console.print(Rule("[heading] Step 2 · Training Model [/heading]"))
-    pipe = build_pipeline()
-
-    with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TimeElapsedColumn(),
-    ) as progress:
-        # task = progress.add_task("Training TF-IDF + CalibratedLinearSVC…", total=None)
-        # t0   = time.time()
-        pipe.fit(X_train, y_train)
-        # elapsed = time.time() - t0
-        progress.stop()
-
-    # console.print(f"[success]Training complete in {elapsed:.2f}s[/success]\n")
-
-    # ── Cross-validation ─────────────────────────────────────────────────────
-    # console.print(Rule("[heading] Step 3 · Cross-Validation [/heading]"))
-    run_cross_validation(pipe, X, y)
-
-    # ── Evaluate ─────────────────────────────────────────────────────────────
-    # console.print(Rule("[heading] Step 4 · Test-Set Evaluation [/heading]"))
-
-    y_pred  = pipe.predict(X_test)
-    y_proba = pipe.predict_proba(X_test)[:, 1]
-
-    metrics = {
-        "Accuracy":  accuracy_score(y_test, y_pred),
-        "F1-Score":  f1_score(y_test, y_pred, average="binary"),
-        "Recall":    recall_score(y_test, y_pred, average="binary"),
-        "Precision": precision_score(y_test, y_pred, average="binary"),
-        "ROC-AUC":   roc_auc_score(y_test, y_proba),
-    }
-
-    # print_metrics_table(metrics)
-    # print_classification_report(y_test, y_pred)
-
-    # Confusion matrix
-    plot_confusion_matrix(y_test, y_pred, CM_IMAGE_PATH)
-    console.print()
-
-    # ── Save model ───────────────────────────────────────────────────────────
-    # console.print(Rule("[heading] Step 5 · Saving Model [/heading]"))
-    joblib.dump(pipe, MODEL_PATH)
-    # console.print(f"[success]Model saved → [underline]{MODEL_PATH}[/underline][/success]\n")
-
-    return pipe
-
-def load_model() -> Pipeline:
-    if not os.path.exists(MODEL_PATH):
-        console.print("[error]No saved model found. Run without --predict first.[/error]")
-        sys.exit(1)
-    # console.print(f"[info]Loading model from [underline]{MODEL_PATH}[/underline]…[/info]")
-    return joblib.load(MODEL_PATH)
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Spam Message Classifier")
-    parser.add_argument("--predict",        action="store_true",
-                        help="Skip training; load saved model and run interactive predictor.")
-    parser.add_argument("--no-interactive", action="store_true",
-                        help="Train & evaluate only; skip interactive predictor.")
-    return parser.parse_args()
-
-def main():
-    args = parse_args()
-    print_banner()
-
-    if args.predict:
-        pipe = load_model()
+try:
+    model, model_status = get_model()
+    if model_status == "loaded":
+        st.caption("Loaded the saved model.")
     else:
-        pipe = train_and_evaluate()
+        st.caption("Model trained from the repository dataset.")
+except Exception as exc:
+    st.error("The classifier could not start.")
+    st.code(str(exc))
+    st.info(
+        "Check that spam_dataset.csv is committed to the root of your GitHub "
+        "repository and contains valid ham/spam labels and message text."
+    )
+    st.stop()
 
-    if not args.no_interactive:
-        interactive_predictor(pipe)
+message = st.text_area(
+    "Message to check",
+    placeholder="Example: Congratulations! You have won a prize. Click here...",
+    height=150,
+)
 
-if __name__ == "__main__":
-    main()
+if st.button("Check message", type="primary", use_container_width=True):
+    if not message.strip():
+        st.warning("Please enter a message first.")
+    else:
+        cleaned = clean_text(message)
+        try:
+            prediction = int(model.predict([cleaned])[0])
+            probabilities = model.predict_proba([cleaned])[0]
+            classes = list(model.classes_)
+            spam_probability = float(probabilities[classes.index(1)]) * 100
+            ham_probability = float(probabilities[classes.index(0)]) * 100
+
+            if prediction == 1:
+                st.error("🚨 Likely SPAM")
+            else:
+                st.success("✅ Likely LEGITIMATE (Ham)")
+
+            col1, col2 = st.columns(2)
+            col1.metric("Spam probability", f"{spam_probability:.1f}%")
+            col2.metric("Legitimate probability", f"{ham_probability:.1f}%")
+
+            st.progress(int(round(spam_probability)))
+            st.caption(
+                "Probability values are model estimates and may not be calibrated "
+                "perfectly for every type of message."
+            )
+        except Exception as exc:
+            st.error("Prediction failed.")
+            st.code(str(exc))
+
+st.divider()
+st.caption("Built with Python, scikit-learn and Streamlit.")
